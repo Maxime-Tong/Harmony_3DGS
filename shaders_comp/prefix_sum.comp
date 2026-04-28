@@ -1,0 +1,53 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "./common.glsl"
+
+#ifdef DEBUG
+#extension GL_EXT_debug_printf : enable
+#endif
+
+layout (std430, set = 0, binding = 0) buffer In {
+    uint buffer0[];
+};
+
+layout (std430, set = 0, binding = 1) buffer Out {
+    uint buffer1[];
+};
+
+layout( push_constant ) uniform Constants
+{
+    uint timestep;
+};
+
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint n = buffer0.length();
+
+    if (index >= n) {
+        return;
+    }
+
+    uint offset = 1 << timestep;
+
+    if (timestep % 2 == 0) {
+        if (index < offset) {
+            buffer1[index] = buffer0[index];
+        } else {
+            buffer1[index] = buffer0[index] + buffer0[index - offset];
+        }
+    } else {
+        if (index < offset) {
+            buffer0[index] = buffer1[index];
+        } else {
+            buffer0[index] = buffer1[index] + buffer1[index - offset];
+        }
+    }
+
+    // #ifdef DEBUG
+    // if (index == 0) {
+    //    debugPrintfEXT("timestep: %d\n", timestep);
+    // }
+    // #endif
+}

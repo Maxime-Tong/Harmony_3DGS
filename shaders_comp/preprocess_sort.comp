@@ -1,0 +1,55 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "./common.glsl"
+
+#define key_t TileDepth
+
+layout (std430, set = 0, binding = 0) readonly buffer Vertices {
+    VertexAttribute attr[];
+};
+
+layout (std430, set = 0, binding = 1) readonly buffer In {
+    uint prefixSum[];
+};
+
+layout (std430, set = 0, binding = 2) writeonly buffer OutKeys {
+    key_t outKeys[];
+};
+
+layout (std430, set = 0, binding = 3) writeonly buffer OutPayloads {
+    uint payloads[];
+};
+
+layout( push_constant ) uniform Constants
+{
+    uint tileX;
+};
+
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    
+    if (index >= prefixSum.length()) {
+        return;
+    }
+
+    if (attr[index].color_radii.w == 0) {
+        return;
+    }
+
+    uint ind = (index == 0) ? 0 : prefixSum[index - 1];
+
+    for (uint i = attr[index].aabb.x; i < attr[index].aabb.z; i++) {
+        for (uint j = attr[index].aabb.y; j < attr[index].aabb.w; j++) {
+            uint tileIndex = i + j * tileX;
+            
+            uint depthBits = floatBitsToUint(attr[index].depth);
+            
+            outKeys[ind] = TileDepth(depthBits, tileIndex);
+            
+            payloads[ind] = index;
+            ind++;
+        }
+    }
+}
