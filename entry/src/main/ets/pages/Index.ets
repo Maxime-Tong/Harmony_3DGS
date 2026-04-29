@@ -52,7 +52,7 @@ struct Vulkan3DGSPage {
         })
         .width('100%')
         .height('70%')
-        .backgroundColor(Color.Black)
+        .backgroundColor(Color.White)
 
       // 按钮区域
       Row() {

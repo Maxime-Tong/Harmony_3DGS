@@ -47,7 +47,7 @@ void DescriptorSet::bindBufferToDescriptorSet(uint32_t binding, VkDescriptorType
     db.layoutBinding = layoutBinding;
 
     db.buffer = buffer;
-    db.bufferInfo.buffer = buffer->vkBuffer; // 使用之前修改的 Buffer::vkBuffer
+    db.bufferInfo.buffer = buffer->vkBuffer;
     db.bufferInfo.offset = 0;
     db.bufferInfo.range = buffer->size;
 

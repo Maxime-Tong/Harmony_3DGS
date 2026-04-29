@@ -135,7 +135,8 @@ void Vulkan3DGS::createPreprocessPipeline() {
     LOGI("Creating preprocess pipeline");
     uniformBuffer = Buffer::uniform(context, sizeof(UniformBuffer));
     vertexAttributeBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(VertexAttributeBuffer), false);
-    tileOverlapBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
+    prefixSumPingBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
+    // tileOverlapBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
 
     preprocessPipeline = std::make_shared<ComputePipeline>(context, std::make_shared<Shader>(context, "preprocess", SPV_PREPROCESS, SPV_PREPROCESS_len));
     
@@ -156,7 +157,7 @@ void Vulkan3DGS::createPreprocessPipeline() {
                                                 vertexAttributeBuffer);
     uniformOutputSet->bindBufferToDescriptorSet(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                                 VK_SHADER_STAGE_COMPUTE_BIT,
-                                                tileOverlapBuffer);    
+                                                prefixSumPingBuffer);    
     uniformOutputSet->build();
 
     preprocessPipeline->addDescriptorSet(1, uniformOutputSet);
@@ -165,7 +166,7 @@ void Vulkan3DGS::createPreprocessPipeline() {
 
 void Vulkan3DGS::createPrefixSumPipeline() {
     LOGI("Creating prefix sum pipeline");
-    prefixSumPingBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
+    // prefixSumPingBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
     prefixSumPongBuffer = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t), false);
     totalSumBufferHost = Buffer::staging(context, sizeof(uint32_t));
 
@@ -333,22 +334,23 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
     uint32_t numVertices = scene->getNumVertices();
     uint32_t numGroups = (numVertices + 255) / 256;
     
-    // 1. Preprocess
+    // Preprocess
     preprocessPipeline->bind(preprocessCommandBuffer_, 0, 0);
     vkCmdDispatch(preprocessCommandBuffer_, numGroups, 1, 1);
     
-    // Memory Barrier
-    tileOverlapBuffer->computeWriteReadBarrier(preprocessCommandBuffer_);
+    // // 2. Copy to PrefixSum Buffer
+    // tileOverlapBuffer->computeWriteReadBarrier(preprocessCommandBuffer_);
+    // VkBufferCopy copyRegion{0, 0,  tileOverlapBuffer->size};
+    // vkCmdCopyBuffer(preprocessCommandBuffer_, tileOverlapBuffer->vkBuffer, prefixSumPingBuffer->vkBuffer, 1, &copyRegion);
 
-    // 2. Copy to PrefixSum Buffer
-    VkBufferCopy copyRegion{0, 0,  tileOverlapBuffer->size};
-    vkCmdCopyBuffer(preprocessCommandBuffer_, tileOverlapBuffer->vkBuffer, prefixSumPingBuffer->vkBuffer, 1, &copyRegion);
     prefixSumPingBuffer->computeWriteReadBarrier(preprocessCommandBuffer_);
 
     // 3. Prefix Sum Iterations
     prefixSumPipeline->bind(preprocessCommandBuffer_, 0, 0);
     uint32_t iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
-    for (uint32_t timestep = 0; timestep <= iters; timestep++) {
+    LOGI("Prefix sum iterations: %{public}d", iters);
+
+    for (uint32_t timestep = 0; timestep < iters; timestep++) {
         vkCmdPushConstants(preprocessCommandBuffer_, prefixSumPipeline->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &timestep);
         vkCmdDispatch(preprocessCommandBuffer_, numGroups, 1, 1);
         
@@ -368,9 +370,9 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
     };
 
     if (iters % 2 == 0) {
-        vkCmdCopyBuffer(preprocessCommandBuffer_, prefixSumPongBuffer->vkBuffer, totalSumBufferHost->vkBuffer, 1, &totalSumRegion);
-    } else {
         vkCmdCopyBuffer(preprocessCommandBuffer_, prefixSumPingBuffer->vkBuffer, totalSumBufferHost->vkBuffer, 1, &totalSumRegion);
+    } else {
+        vkCmdCopyBuffer(preprocessCommandBuffer_, prefixSumPongBuffer->vkBuffer, totalSumBufferHost->vkBuffer, 1, &totalSumRegion);
     }
 
     vkEndCommandBuffer(preprocessCommandBuffer_);
@@ -425,7 +427,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     // ================== preprocess sort =========================
     const auto iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
     auto numGroups = (scene->getNumVertices() + 255) / 256;
-    preprocessSortPipeline->bind(renderCommandBuffer_, 0, iters % 2 == 0 ? 1 : 0);
+    preprocessSortPipeline->bind(renderCommandBuffer_, 0, iters % 2 == 0 ? 0 : 1);
     
 //    renderCommandBuffer_->writeTimestamp(vk::PipelineStageFlagBits::eComputeShader, context->queryPool.get(),
 //                                            queryManager->registerQuery("preprocess_sort_start"));
@@ -443,7 +445,9 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
-    int sort_iterations = (16 + 8 + highestBit(numInstances) ) / 8;
+    uint32_t tileY = (swapchain->swapchainExtent.height + 16 - 1) / 16;
+    // LOGI("image width: %{public}d, image height: %{public}d", config_.image_width, config_.image_height);
+    int sort_iterations = (16 + highestBit(tileX * tileY) ) / 8;
     LOGI("Num sort iterations: %{public}d", sort_iterations);
     for (auto i = 0; i < sort_iterations; i++) {
         sortHistPipeline->bind(renderCommandBuffer_, 0, i % 2 == 0 ? 0 : 1);

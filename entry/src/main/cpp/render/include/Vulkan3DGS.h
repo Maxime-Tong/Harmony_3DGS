@@ -103,7 +103,7 @@ private:
 
     std::shared_ptr<Buffer> uniformBuffer;
     std::shared_ptr<Buffer> vertexAttributeBuffer;
-    std::shared_ptr<Buffer> tileOverlapBuffer;
+    // std::shared_ptr<Buffer> tileOverlapBuffer;
     std::shared_ptr<Buffer> prefixSumPingBuffer;
     std::shared_ptr<Buffer> prefixSumPongBuffer;
     std::shared_ptr<Buffer> sortKeyBufferEven;
