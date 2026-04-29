@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "./common.glsl"
 
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
 #define key_t TileDepth
 
 layout (std430, set = 0, binding = 0) readonly buffer Vertices {
@@ -44,9 +46,9 @@ void main() {
         for (uint j = attr[index].aabb.y; j < attr[index].aabb.w; j++) {
             uint tileIndex = i + j * tileX;
             
-            uint depthBits = floatBitsToUint(attr[index].depth);
-            
-            outKeys[ind] = TileDepth(depthBits, tileIndex);
+            uint depthBits_uint = packHalf2x16(vec2(attr[index].depth, attr[index].depth));
+            uint tile_low_bits = tileIndex & 0xFFFF;
+            outKeys[ind] = TileDepth((depthBits_uint >> 16) | (tile_low_bits << 16), tileIndex >> 16);
             
             payloads[ind] = index;
             ind++;

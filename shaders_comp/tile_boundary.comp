@@ -25,11 +25,11 @@ void main() {
         return;
     }
 
-    uint key = keys[index].high;
+    uint key = (keys[index].low >> 16) | (keys[index].high << 16);
     if (index == 0) {
         boundaries[key * 2] = index;
     } else {
-        uint prevKey = keys[index - 1].high;
+        uint prevKey = (keys[index - 1].low >> 16) | (keys[index - 1].high << 16);
         if (key != prevKey) {
             boundaries[key * 2] = index;
             boundaries[prevKey * 2 + 1] = index;

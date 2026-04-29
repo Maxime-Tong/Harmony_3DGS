@@ -26,6 +26,14 @@ static bool inline CheckResult(VkResult result) {
     return true;
 }
 
+int inline highestBit(uint32_t x) {
+    if (x & 0xFF000000) { return 32; }
+    if (x & 0x00FF0000) { return 24; }
+    if (x & 0x0000FF00) { return 16; }
+    if (x & 0x000000FF) { return 8; }
+    return 0;
+}
+
 void Vulkan3DGS::setConfig(uint64_t width, uint64_t height, OHNativeWindow* window, NativeResourceManager* resourceManager) {
     config_.image_width = static_cast<int>(width);
     config_.image_height = static_cast<int>(height);
@@ -265,6 +273,7 @@ void Vulkan3DGS::createTileBoundaryPipeline() {
     tileBoundaryPipeline = std::make_shared<ComputePipeline>(context, std::make_shared<Shader>(context, "tile_boundary", SPV_TILE_BOUNDARY, SPV_TILE_BOUNDARY_len));
     auto descriptorSet = std::make_shared<DescriptorSet>(context, FRAMES_IN_FLIGHT);
     descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, sortKeyBufferEven);
+    descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, sortKeyBufferOdd);
     descriptorSet->bindBufferToDescriptorSet(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, tileBoundaryBuffer);
     descriptorSet->build();
 
@@ -413,11 +422,11 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
 
     vertexAttributeBuffer->computeWriteReadBarrier(renderCommandBuffer_);
 
+    // ================== preprocess sort =========================
     const auto iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
     auto numGroups = (scene->getNumVertices() + 255) / 256;
     preprocessSortPipeline->bind(renderCommandBuffer_, 0, iters % 2 == 0 ? 1 : 0);
     
-    // ================== preprocess sort =========================
 //    renderCommandBuffer_->writeTimestamp(vk::PipelineStageFlagBits::eComputeShader, context->queryPool.get(),
 //                                            queryManager->registerQuery("preprocess_sort_start"));
     uint32_t tileX = (swapchain->swapchainExtent.width + 16 - 1) / 16;
@@ -434,7 +443,9 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
-    for (auto i = 0; i < 8; i++) {
+    int sort_iterations = (16 + 8 + highestBit(numInstances) ) / 8;
+    LOGI("Num sort iterations: %{public}d", sort_iterations);
+    for (auto i = 0; i < sort_iterations; i++) {
         sortHistPipeline->bind(renderCommandBuffer_, 0, i % 2 == 0 ? 0 : 1);
         auto invocationSize = (numInstances + numRadixSortBlocksPerWorkgroup - 1) / numRadixSortBlocksPerWorkgroup;
         invocationSize = (invocationSize + 255) / 256;
@@ -487,7 +498,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
                VK_PIPELINE_STAGE_TRANSFER_BIT,
                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     
-    tileBoundaryPipeline->bind(renderCommandBuffer_, 0, 0);
+    tileBoundaryPipeline->bind(renderCommandBuffer_, 0, sort_iterations % 2 == 0 ? 0 : 1);
 
     vkCmdPushConstants(renderCommandBuffer_, 
                        tileBoundaryPipeline->pipelineLayout,

@@ -131,13 +131,9 @@ bool Context::CreateLogicalDevice() {
     }
 
     VkPhysicalDeviceFeatures deviceFeatures{};
-    deviceFeatures.shaderStorageImageWriteWithoutFormat = VK_FALSE; 
-    deviceFeatures.shaderInt64 = VK_FALSE;
     
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    vulkan12Features.shaderBufferInt64Atomics = VK_FALSE;
-    vulkan12Features.shaderSharedInt64Atomics = VK_FALSE;
 
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
