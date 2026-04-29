@@ -84,17 +84,35 @@ void PluginRender::OnSurfaceCreatedCB(OH_NativeXComponent* component, void* wind
     PluginRender& render = PluginRender::GetInstance();
     render.nativeWindow_ = static_cast<OHNativeWindow*>(window);
 
-    uint64_t width;
-    uint64_t height;
-    int32_t xSize = OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
-    if (xSize != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
-        LOGE("OnSurfaceCreatedCB: Unable to qet XComponent size");
-        return;
+    uint64_t targetWidth = 720;
+    uint64_t targetHeight = 1280;
+
+    int32_t ret = OH_NativeWindow_NativeWindowHandleOpt(
+        render.nativeWindow_, 
+        SET_BUFFER_GEOMETRY, 
+        targetWidth, 
+        targetHeight
+    );
+
+    if (ret != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+        LOGE("设置 Buffer 几何尺寸失败");
     }
 
-    LOGI("PluginRender: 窗口创建完成，开始初始化Vulkan\n");
-    render.vulkanRender_->setConfig(width, height, render.nativeWindow_, render.resourceManager_);
+    LOGI("PluginRender: 渲染分辨率 (%{public}d x %{public}d)", targetWidth, targetHeight);
+    render.vulkanRender_->setConfig(targetWidth, targetHeight, render.nativeWindow_, render.resourceManager_);
     render.vulkanRender_->initialize();
+
+    // uint64_t width;
+    // uint64_t height;
+    // int32_t xSize = OH_NativeXComponent_GetXComponentSize(component, window, &width, &height);
+    // if (xSize != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+    //     LOGE("OnSurfaceCreatedCB: Unable to qet XComponent size");
+    //     return;
+    // }
+
+    // LOGI("PluginRender: 窗口创建完成，开始初始化Vulkan\n");
+    // render.vulkanRender_->setConfig(width, height, render.nativeWindow_, render.resourceManager_);
+    // render.vulkanRender_->initialize();
 }
 
 void PluginRender::OnSurfaceChangedCB(OH_NativeXComponent* component, void* window) {
