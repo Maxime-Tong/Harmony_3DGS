@@ -46,38 +46,22 @@ void main() {
     float T = 1.0f;
     vec3 c = vec3(0.0f);
 
-    if (gl_GlobalInvocationID.x == 10000) {
-//        debugPrintfEXT("c %f %f %f\n", attr[vertex_key].color_radii.x, attr[vertex_key].color_radii.y, attr[vertex_key].color_radii.z);
-//        debugPrintfEXT("uv %d %d\n", attr[vertex_key].uv.x, attr[vertex_key].uv.y);
-//        debugPrintfEXT("curr_uv %d %d\n", curr_uv.x, curr_uv.y);
-//        debugPrintfEXT("co %f %f %f %f\n", attr[vertex_key].conic_opacity.x, attr[vertex_key].conic_opacity.y, attr[vertex_key].conic_opacity.z, attr[vertex_key].conic_opacity.w);
-    }
-
-    if (start > end && gl_LocalInvocationIndex == 0) {
-//        debugPrintfEXT("ERROR ----- start %d end %d at %d (TX %d TY %d wid %d)\n", start, end, tileX + tileY * tiles_width, tileX, tileY, tiles_width);
-//        debugPrintfEXT("      ----- %d %d %d %d\n", boundaries[tileX + tileY * tiles_width - 2], boundaries[tileX + tileY * tiles_width - 1], boundaries[tileX + tileY * tiles_width + 2], boundaries[tileX + tileY * tiles_width + 3]);
-    }
-
     for (uint i = start; i < end; i++) {
         uint vertex_key = sorted_vertices[i];
         vec2 uv = attr[vertex_key].uv;
-        vec2 distance = uv - vec2(curr_uv);
         vec4 co = attr[vertex_key].conic_opacity;
-        float power = -0.5f * (co.x * distance.x * distance.x + co.z * distance.y * distance.y) - co.y * distance.x * distance.y;
 
-        if (power > 0.0f) {
+        vec2 distance = uv - vec2(curr_uv);
+        // co.w == log(opacity)
+        float neg_power = 0.5f * (co.x * distance.x * distance.x + co.z * distance.y * distance.y) + co.y * distance.x * distance.y - co.w;
+        if (neg_power > lowest_alpha_coeff) {
             continue;
         }
 
-        if (gl_GlobalInvocationID.x == 100) {
-//            debugPrintfEXT("radius %f\n", attr[vertex_key].color_radii.w);
-        }
-
-
-        float alpha = min(0.99f, co.w * exp(power));
-        if (alpha < 1.0f / 255.0f) {
-            continue;
-        }
+        float tmp_idx_f = max(0.f, neg_power * inv_exp_lut_step);
+        int tmp_idx = int(floor(tmp_idx_f));
+        float interp_factor = tmp_idx_f - floor(tmp_idx_f);
+        float alpha = mix(lut[tmp_idx], lut[tmp_idx+1], interp_factor);
 
         float test_T = T * (1 - alpha);
         if (test_T < 0.0001f) {
