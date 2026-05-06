@@ -75,9 +75,9 @@ vec3 compute_sh() {
 
     vec3 ray_direction = vertices[index].position.xyz - camera_position.xyz;
     ray_direction /= length(ray_direction);
-    float x = ray_direction.x, y = ray_direction.y, z = ray_direction.z;
+    mediump float x = ray_direction.x, y = ray_direction.y, z = ray_direction.z;
 
-    vec3 c = SH_C0 * get_sh_vec3(0);
+    mediump vec3 c = SH_C0 * get_sh_vec3(0);
 
     c -= SH_C1 * get_sh_vec3(1) * y;
     c += SH_C1 * get_sh_vec3(2) * z;

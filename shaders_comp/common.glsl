@@ -13,9 +13,9 @@
 
 #define MAGIC 0x4d415449u
 
-const float lowest_alpha_coeff = 5.0f; // -ln(alpha_threshold)
-const float inv_exp_lut_step = 31.0f/lowest_alpha_coeff;
-const float lut[] = {
+const mediump float lowest_alpha_coeff = 5.0f; // -ln(alpha_threshold)
+const mediump float inv_exp_lut_step = 31.0f/lowest_alpha_coeff;
+const mediump float lut[] = {
 1.0,
 0.8510449576692257,
 0.7242775199742143,
@@ -50,16 +50,16 @@ const float lut[] = {
 0.006737946999085467
 };
 
-const float SH_C0 = 0.28209479177387814f;
-const float SH_C1 = 0.4886025119029199f;
-const float SH_C2[] = {
+const mediump float SH_C0 = 0.28209479177387814f;
+const mediump float SH_C1 = 0.4886025119029199f;
+const mediump float SH_C2[] = {
 1.0925484305920792f,
 -1.0925484305920792f,
 0.31539156525252005f,
 -1.0925484305920792f,
 0.5462742152960396f
 };
-const float SH_C3[] = {
+const mediump float SH_C3[] = {
 -0.5900435899266435f,
 2.890611442640554f,
 -0.4570457994644658f,

@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "./common.glsl"
 
+precision highp float;
+
 // #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 //#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
@@ -43,8 +45,8 @@ void main() {
     uint start = boundaries[(tileX + tileY * tiles_width) * 2];
     uint end = boundaries[(tileX + tileY * tiles_width) * 2 + 1];
 
-    float T = 1.0f;
-    vec3 c = vec3(0.0f);
+    mediump float T = 1.0f;
+    mediump vec3 c = vec3(0.0f);
 
     for (uint i = start; i < end; i++) {
         uint vertex_key = sorted_vertices[i];
@@ -53,17 +55,17 @@ void main() {
 
         vec2 distance = uv - vec2(curr_uv);
         // co.w == log(opacity)
-        float neg_power = 0.5f * (co.x * distance.x * distance.x + co.z * distance.y * distance.y) + co.y * distance.x * distance.y - co.w;
+        mediump float neg_power = 0.5f * (co.x * distance.x * distance.x + co.z * distance.y * distance.y) + co.y * distance.x * distance.y - co.w;
         if (neg_power > lowest_alpha_coeff) {
             continue;
         }
 
-        float tmp_idx_f = max(0.f, neg_power * inv_exp_lut_step);
+        mediump float tmp_idx_f = max(0.f, neg_power * inv_exp_lut_step);
         int tmp_idx = int(floor(tmp_idx_f));
-        float interp_factor = tmp_idx_f - floor(tmp_idx_f);
-        float alpha = mix(lut[tmp_idx], lut[tmp_idx+1], interp_factor);
+        mediump float interp_factor = tmp_idx_f - floor(tmp_idx_f);
+        mediump float alpha = mix(lut[tmp_idx], lut[tmp_idx+1], interp_factor);
 
-        float test_T = T * (1 - alpha);
+        mediump float test_T = T * (1 - alpha);
         if (test_T < 0.0001f) {
             break;
         }
