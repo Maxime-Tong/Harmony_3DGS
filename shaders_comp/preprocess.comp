@@ -142,15 +142,19 @@ void main() {
         return;
     }
     mat2 conic = inverse(cov2d);
+    mediump float ln_opa = log(vertices[index].scale_opacity.w);
     attr[index].conic_opacity.xyz = vec3(conic[0][0], conic[0][1], conic[1][1]);
-    attr[index].conic_opacity.w = log(vertices[index].scale_opacity.w);
+    attr[index].conic_opacity.w = ln_opa;
     // attr[index].conic_opacity.w = vertices[index].scale_opacity.w;
 
-    float mid = 0.5 * (cov2d[0][0] + cov2d[1][1]);
-    float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
-    float lambda2 = mid - sqrt(max(0.1, mid * mid - det));
-    float lambda = max(lambda1, lambda2);
-    float radii = ceil(3.0 * sqrt(lambda));
+    float mahala_dist = max(0.0, min(2.0 * (lowest_alpha_coeff + ln_opa), 9.0));
+    vec2 rect = vec2(sqrt(cov2d[0][0] * mahala_dist), sqrt(cov2d[1][1] * mahala_dist) );
+
+    // float mid = 0.5 * (cov2d[0][0] + cov2d[1][1]);
+    // float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
+    // float lambda2 = mid - sqrt(max(0.1, mid * mid - det));
+    // float lambda = max(lambda1, lambda2);
+    // float radii = ceil(3.0 * sqrt(lambda));
 //    if (radii > 2.0) {
 //        debugPrintfEXT("lambda: %f, radii: %f\n", lambda, radii);
 //    }
@@ -159,16 +163,16 @@ void main() {
     vec2 uv = vec2(ndc2Pix(ndc.x, int(width)), ndc2Pix(ndc.y, int(height)));
 
     uvec4 bounding_box = uvec4(
-            uint(clamp(int((uv.x - radii) / TILE_WIDTH), 0, tile_shape.x)),
-            uint(clamp(int((uv.y - radii) / TILE_HEIGHT), 0, tile_shape.y)),
-            uint(clamp(int((uv.x + radii + TILE_WIDTH - 1) / TILE_WIDTH), 0, tile_shape.x)),
-            uint(clamp(int((uv.y + radii + TILE_HEIGHT - 1) / TILE_HEIGHT), 0, tile_shape.y))
+            uint(clamp(int((uv.x - rect.x) / TILE_WIDTH), 0, tile_shape.x)),
+            uint(clamp(int((uv.y - rect.y) / TILE_HEIGHT), 0, tile_shape.y)),
+            uint(clamp(int((uv.x + rect.x + TILE_WIDTH - 1) / TILE_WIDTH), 0, tile_shape.x)),
+            uint(clamp(int((uv.y + rect.y + TILE_HEIGHT - 1) / TILE_HEIGHT), 0, tile_shape.y))
     );
 
 //    debugPrintfEXT("radii: %f, uv: %f %f, aabb: %d %d %d %d\n", radii, uv.x, uv.y, ivec4(bounding_box));
 
     uint num_tiles_overlap = (bounding_box.z - bounding_box.x) * (bounding_box.w - bounding_box.y);
-    if (num_tiles_overlap == 0) {
+    if (num_tiles_overlap <= 1) {
         return;
     }
     assert(num_tiles_overlap <= width * height, "too many tiles overlap: %d\n", num_tiles_overlap);
@@ -176,7 +180,7 @@ void main() {
 //    assert(bounding_box.x < bounding_box.z && bounding_box.y < bounding_box.w, "invalid aabb: %d %d %d %d\n", ivec4(bounding_box));
     tiles_overlap[index] = num_tiles_overlap;
     attr[index].depth = p_view.z;
-    attr[index].color_radii.w = radii;
+    attr[index].color_radii.w = float(num_tiles_overlap);
     attr[index].color_radii.xyz = compute_sh();
     attr[index].uv = uv;
     attr[index].magic = MAGIC;
