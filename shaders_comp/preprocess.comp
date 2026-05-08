@@ -172,7 +172,7 @@ void main() {
 //    debugPrintfEXT("radii: %f, uv: %f %f, aabb: %d %d %d %d\n", radii, uv.x, uv.y, ivec4(bounding_box));
 
     uint num_tiles_overlap = (bounding_box.z - bounding_box.x) * (bounding_box.w - bounding_box.y);
-    if (num_tiles_overlap <= 1) {
+    if (num_tiles_overlap <= 0) {
         return;
     }
     assert(num_tiles_overlap <= width * height, "too many tiles overlap: %d\n", num_tiles_overlap);
