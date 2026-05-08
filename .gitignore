@@ -13,3 +13,4 @@
 
 *.ply
 *.json
+__pycache__/
