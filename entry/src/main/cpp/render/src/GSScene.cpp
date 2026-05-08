@@ -4,7 +4,7 @@
 #include "GSScene.h"
 #include "Shader.h"
 #include "pipelines/ComputePipeline.h"
-#include "shaders.h"
+#include "shaders_half.h"
 #include "Utils.h"
 
 #include <sstream>

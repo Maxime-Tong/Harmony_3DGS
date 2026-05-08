@@ -12,7 +12,6 @@
 
 namespace VulkanUtils {
 std::vector<char> readFile(NativeResourceManager* resMgr, const std::string& filename);
-
 };
 
 #endif //HARMONYOS_3DGS_UTILS_H

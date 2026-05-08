@@ -1,6 +1,6 @@
 #include "Vulkan3DGS.h"
 #include "json/json.h"
-#include "shaders.h"
+#include "shaders_half.h"
 #include "Utils.h"
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -390,7 +390,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     }
 
     uint32_t numInstances = totalSumBufferHost->readOne<uint32_t>();
-    LOGI("Num instances: %{public}d", numInstances);
+//    LOGI("Num instances: %{public}d", numInstances);
     
     if (numInstances > scene->getNumVertices() * sortBufferSizeMultiplier) {
         auto old = sortBufferSizeMultiplier;
@@ -441,14 +441,12 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     vkCmdDispatch(renderCommandBuffer_, numGroups, 1, 1);
 
     sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer_);
-
-    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
+//    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
     uint32_t tileY = (swapchain->swapchainExtent.height + 16 - 1) / 16;
-    // LOGI("image width: %{public}d, image height: %{public}d", config_.image_width, config_.image_height);
     int sort_iterations = (16 + highestBit(tileX * tileY) ) / 8;
-    LOGI("Num sort iterations: %{public}d", sort_iterations);
+//    LOGI("Num sort iterations: %{public}d", sort_iterations);
     for (auto i = 0; i < sort_iterations; i++) {
         sortHistPipeline->bind(renderCommandBuffer_, 0, i % 2 == 0 ? 0 : 1);
         auto invocationSize = (numInstances + numRadixSortBlocksPerWorkgroup - 1) / numRadixSortBlocksPerWorkgroup;

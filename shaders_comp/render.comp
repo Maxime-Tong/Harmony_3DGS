@@ -35,7 +35,7 @@ void main() {
     uint localX = gl_LocalInvocationID.x;
     uint localY = gl_LocalInvocationID.y;
 
-    uvec2 curr_uv = uvec2(tileX * TILE_WIDTH + localX, tileY * TILE_HEIGHT + localY);
+    vec2 curr_uv = vec2(tileX * TILE_WIDTH + localX, tileY * TILE_HEIGHT + localY);
     if (curr_uv.x >= width || curr_uv.y >= height) {
         return;
     }
@@ -53,7 +53,7 @@ void main() {
         vec2 uv = attr[vertex_key].uv;
         vec4 co = attr[vertex_key].conic_opacity;
 
-        vec2 distance = uv - vec2(curr_uv);
+        vec2 distance = uv - curr_uv;
         // co.w == log(opacity)
         mediump float neg_power = 0.5f * (co.x * distance.x * distance.x + co.z * distance.y * distance.y) + co.y * distance.x * distance.y - co.w;
         if (neg_power > lowest_alpha_coeff) {

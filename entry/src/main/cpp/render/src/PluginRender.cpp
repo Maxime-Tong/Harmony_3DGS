@@ -86,6 +86,8 @@ void PluginRender::OnSurfaceCreatedCB(OH_NativeXComponent* component, void* wind
 
     uint64_t targetWidth = 720;
     uint64_t targetHeight = 1280;
+    // uint64_t targetWidth = 480;
+    // uint64_t targetHeight = 720;
 
     int32_t ret = OH_NativeWindow_NativeWindowHandleOpt(
         render.nativeWindow_, 

@@ -35,14 +35,12 @@ struct Vulkan3DGSPage {
 
   build() {
     Column() {
-      // XComponent 显示区域
       XComponent({
         id: 'vulkan',
         type: XComponentType.SURFACE,
         libraryname: 'vulkan3dgs'
       })
         .onLoad((xComponentContext?: object | Record<string, (a: number | boolean | undefined) => void>) => {
-          // 保存 XComponent 上下文
           if (xComponentContext) {
             this.xComponentContext = xComponentContext as Record<string, (a: number | boolean | undefined) => void>;
             console.info('XComponent loaded successfully');
@@ -52,7 +50,6 @@ struct Vulkan3DGSPage {
         })
         .width('100%')
         .height('70%')
-        .backgroundColor(Color.White)
 
       // 按钮区域
       Row() {
@@ -60,7 +57,7 @@ struct Vulkan3DGSPage {
           .type(ButtonType.Normal)
           .fontSize(20)
           .fontWeight(FontWeight.Medium)
-          .backgroundColor('#4CAF50')
+          .backgroundColor('#66BB6A')
           .borderRadius(8)
           .padding({ left: 24, right: 24, top: 12, bottom: 12 })
           .onClick(() => {
@@ -71,7 +68,8 @@ struct Vulkan3DGSPage {
           .type(ButtonType.Normal)
           .fontSize(20)
           .fontWeight(FontWeight.Medium)
-          .backgroundColor('#F44336')
+          // 修改背景色为亮红色以便在黑底上可见
+          .backgroundColor('#EF5350')
           .borderRadius(8)
           .padding({ left: 24, right: 24, top: 12, bottom: 12 })
           .margin({ left: 20 })
@@ -86,7 +84,7 @@ struct Vulkan3DGSPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#F1F3F5')
+    .backgroundColor(Color.Black)
   }
 
   private handleStart(): void {
