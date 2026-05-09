@@ -67,6 +67,7 @@ public:
     void createPreprocessPipeline();
     void createPrefixSumPipeline();
     void createRadixSortPipeline();
+    void createXEngineSorter();
     void createPreprocessSortPipeline();
     void createTileBoundaryPipeline();
     void createRenderPipeline();
@@ -106,6 +107,7 @@ private:
     // std::shared_ptr<Buffer> tileOverlapBuffer;
     std::shared_ptr<Buffer> prefixSumPingBuffer;
     std::shared_ptr<Buffer> prefixSumPongBuffer;
+    std::shared_ptr<Buffer> sortCountBuffer;
     std::shared_ptr<Buffer> sortKeyBufferEven;
     std::shared_ptr<Buffer> sortKeyBufferOdd;
     std::shared_ptr<Buffer> sortHistBuffer;
@@ -123,6 +125,7 @@ private:
     
     std::vector<Camera> testCameras;
     uint32_t testCameraIndex = 0;
+    uint32_t direction = 1;
     
     Camera camera {
         .position = glm::vec3(0.0f, 0.0f, 0.0f),

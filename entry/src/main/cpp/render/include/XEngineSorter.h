@@ -21,15 +21,14 @@ public:
     XEngineSorter(const std::shared_ptr<Context>& _context);
     ~XEngineSorter();
 
-    void cmdDispatchSort(VkCommandBuffer cmdBuffer, 
-                        std::shared_ptr<Buffer> depthBuffer, std::shared_ptr<Buffer> tileBuffer, 
-                        std::shared_ptr<Buffer> indexBuffer,
+    void cmdDispatchSort(VkCommandBuffer cmdBuffer,
+                        std::shared_ptr<Buffer> keyBuffer, 
+                        std::shared_ptr<Buffer> valueBuffer,
                         std::shared_ptr<Buffer> sortCount);
 
 private:
     std::shared_ptr<Context> context;
     XEG_HPS sorter_ = VK_NULL_HANDLE;
-    XEG_HPS sorter2_ = VK_NULL_HANDLE;
 };
 
 #endif //HARMONYOS_3DGS_XENGINESORTER_H

@@ -4,7 +4,7 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-#define key_t TileDepth
+#define key_t uint
 
 layout (std430, set = 0, binding = 0) readonly buffer Vertices {
     VertexAttribute attr[];
@@ -45,11 +45,8 @@ void main() {
     for (uint i = attr[index].aabb.x; i < attr[index].aabb.z; i++) {
         for (uint j = attr[index].aabb.y; j < attr[index].aabb.w; j++) {
             uint tileIndex = i + j * tileX;
-            
             uint depthBits_uint = packHalf2x16(vec2(attr[index].depth, attr[index].depth));
-            uint tile_low_bits = tileIndex & 0xFFFF;
-            outKeys[ind] = TileDepth((depthBits_uint >> 16) | (tile_low_bits << 16), tileIndex >> 16);
-            
+            outKeys[ind] = (depthBits_uint & 0xFFFF) | (tileIndex << 16);
             payloads[ind] = index;
             ind++;
         }
