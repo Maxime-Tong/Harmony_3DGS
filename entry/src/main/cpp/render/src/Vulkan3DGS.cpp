@@ -130,6 +130,11 @@ void Vulkan3DGS::loadScene() {
     
     loadTestCameras();
     vkResetDescriptorPool(context->device_, context->descriptorPool_, 0);
+
+    uint32_t tileX = (config_.image_width + 16 - 1) / 16;
+    uint32_t tileY = (config_.image_height + 16 - 1) / 16;
+    uint32_t numTiles = tileX * tileY;
+    sortBufferSize = numTiles * 512;
 }
 
 void Vulkan3DGS::createPreprocessPipeline() {
@@ -184,77 +189,12 @@ void Vulkan3DGS::createPrefixSumPipeline() {
     prefixSumPipeline->build();
 }
 
-void Vulkan3DGS::createRadixSortPipeline() {
-    LOGI("Creating radix sort pipeline");
-    sortKeyBufferEven = Buffer::storage(context, scene->getNumVertices() * sizeof(TileDepth) * sortBufferSizeMultiplier,
-                                     false, 0);
-    sortKeyBufferOdd = Buffer::storage(context, scene->getNumVertices() * sizeof(TileDepth) * sortBufferSizeMultiplier,
-                                     false, 0);
-    sortValueBufferEven = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier,
-                                      false, 0);
-    sortValueBufferOdd = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier,
-                                     false, 0);
-
-    uint32_t globalInvocationSize = scene->getNumVertices() * sortBufferSizeMultiplier / numRadixSortBlocksPerWorkgroup;
-    uint32_t remainder = scene->getNumVertices() * sortBufferSizeMultiplier % numRadixSortBlocksPerWorkgroup;
-    globalInvocationSize += remainder > 0 ? 1 : 0;
-
-    auto numWorkgroups = (globalInvocationSize + 256 - 1) / 256;
-
-    sortHistBuffer = Buffer::storage(context, numWorkgroups * 256 * sizeof(uint32_t), false);
-
-    sortHistPipeline = std::make_shared<ComputePipeline>(
-        context, std::make_shared<Shader>(context, "hist", SPV_HIST, SPV_HIST_len));
-    sortPipeline = std::make_shared<ComputePipeline>(
-        context, std::make_shared<Shader>(context, "sort", SPV_SORT, SPV_SORT_len));
-
-    auto descriptorSet = std::make_shared<DescriptorSet>(context, FRAMES_IN_FLIGHT);
-    descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferEven);
-    descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferOdd);
-    descriptorSet->bindBufferToDescriptorSet(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortHistBuffer);
-    descriptorSet->build();
-    sortHistPipeline->addDescriptorSet(0, descriptorSet);
-    sortHistPipeline->addPushConstant(VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RadixSortPushConstants));
-    sortHistPipeline->build();
-
-    descriptorSet = std::make_shared<DescriptorSet>(context, FRAMES_IN_FLIGHT);
-    descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferEven);
-    descriptorSet->bindBufferToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferOdd);
-
-    descriptorSet->bindBufferToDescriptorSet(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferOdd);
-    descriptorSet->bindBufferToDescriptorSet(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortKeyBufferEven);
-
-    descriptorSet->bindBufferToDescriptorSet(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortValueBufferEven);
-    descriptorSet->bindBufferToDescriptorSet(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortValueBufferOdd);
-
-    descriptorSet->bindBufferToDescriptorSet(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortValueBufferOdd);
-    descriptorSet->bindBufferToDescriptorSet(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortValueBufferEven);
-
-    descriptorSet->bindBufferToDescriptorSet(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             sortHistBuffer);
-    descriptorSet->build();
-    sortPipeline->addDescriptorSet(0, descriptorSet);
-    sortPipeline->addPushConstant(VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RadixSortPushConstants));
-    sortPipeline->build();
-}
-
 void Vulkan3DGS::createXEngineSorter() {
     LOGI("Creating XEngineSorter");
     sorter = std::make_shared<XEngineSorter>(context);
-    sortKeyBufferEven = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier,
+    sortKeyBufferEven = Buffer::storage(context, sizeof(uint32_t) * sortBufferSize,
                                 false, 0);
-    sortValueBufferEven = Buffer::storage(context, scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier,
+    sortValueBufferEven = Buffer::storage(context, sizeof(uint32_t) * sortBufferSize,
                                 false, 0);
     sortCountBuffer = Buffer::storage(context, sizeof(uint32_t), false, 0);
 }
@@ -406,25 +346,18 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
 
     uint32_t numInstances = totalSumBufferHost->readOne<uint32_t>();
     
-    if (numInstances > scene->getNumVertices() * sortBufferSizeMultiplier) {
-        auto old = sortBufferSizeMultiplier;
-        while (numInstances > scene->getNumVertices() * sortBufferSizeMultiplier) {
+    if (numInstances > sortBufferSize) {
+        auto old = sortBufferSize;
+        
+        uint32_t sortBufferSizeMultiplier = 1;
+        while (numInstances > sortBufferSize * sortBufferSizeMultiplier) {
             sortBufferSizeMultiplier++;
         }
+        sortBufferSize *= sortBufferSizeMultiplier;
 
-        LOGI("Reallocating sort buffers. %{public}d -> %{public}d", old, sortBufferSizeMultiplier);
-        sortKeyBufferEven->realloc(scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier);
-        // sortKeyBufferOdd->realloc(scene->getNumVertices() * sizeof(TileDepth) * sortBufferSizeMultiplier);
-        sortValueBufferEven->realloc(scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier);
-        // sortValueBufferOdd->realloc(scene->getNumVertices() * sizeof(uint32_t) * sortBufferSizeMultiplier);
-
-        // uint32_t globalInvocationSize = scene->getNumVertices() * sortBufferSizeMultiplier /
-                                        // numRadixSortBlocksPerWorkgroup;
-        // uint32_t remainder = scene->getNumVertices() * sortBufferSizeMultiplier % numRadixSortBlocksPerWorkgroup;
-        // globalInvocationSize += remainder > 0 ? 1 : 0;
-        // auto numWorkgroups = (globalInvocationSize + 256 - 1) / 256;
-        // sortHistBuffer->realloc(numWorkgroups * 256 * sizeof(uint32_t));
-
+        LOGI("Reallocating sort buffers. %{public}d -> %{public}d", old, sortBufferSize);
+        sortKeyBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
+        sortValueBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
         recordPreprocessCommandBuffer();
         return false;
     }
@@ -458,46 +391,6 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
 //    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
-//     uint32_t tileY = (swapchain->swapchainExtent.height + 16 - 1) / 16;
-//     int sort_iterations = (16 + highestBit(tileX * tileY) ) / 8;
-// //    LOGI("Num sort iterations: %{public}d", sort_iterations);
-//     for (auto i = 0; i < sort_iterations; i++) {
-//         sortHistPipeline->bind(renderCommandBuffer_, 0, i % 2 == 0 ? 0 : 1);
-//         auto invocationSize = (numInstances + numRadixSortBlocksPerWorkgroup - 1) / numRadixSortBlocksPerWorkgroup;
-//         invocationSize = (invocationSize + 255) / 256;
-
-//         RadixSortPushConstants pushConstants{};
-//         pushConstants.g_num_elements = numInstances;
-//         pushConstants.g_num_blocks_per_workgroup = numRadixSortBlocksPerWorkgroup;
-//         pushConstants.g_shift = i * 8;
-//         pushConstants.g_num_workgroups = invocationSize;
-//         vkCmdPushConstants(renderCommandBuffer_, 
-//                        sortHistPipeline->pipelineLayout,
-//                        VK_SHADER_STAGE_COMPUTE_BIT, 
-//                        0, 
-//                        sizeof(RadixSortPushConstants), 
-//                        &pushConstants);
-//         vkCmdDispatch(renderCommandBuffer_, invocationSize, 1, 1);
-
-//         sortHistBuffer->computeWriteReadBarrier(renderCommandBuffer_);
-
-//         sortPipeline->bind(renderCommandBuffer_, 0, i % 2 == 0 ? 0 : 1);
-//         vkCmdPushConstants(renderCommandBuffer_, 
-//                         sortPipeline->pipelineLayout,
-//                         VK_SHADER_STAGE_COMPUTE_BIT,
-//                         0,
-//                         sizeof(RadixSortPushConstants),
-//                         &pushConstants);
-//         vkCmdDispatch(renderCommandBuffer_, invocationSize, 1, 1);
-
-//         if (i % 2 == 0) {
-//             sortKeyBufferOdd->computeWriteReadBarrier(renderCommandBuffer_);
-//             sortValueBufferOdd->computeWriteReadBarrier(renderCommandBuffer_);
-//         } else {
-//             sortKeyBufferEven->computeWriteReadBarrier(renderCommandBuffer_);
-//             sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer_);
-//         }
-//     }
     sorter->cmdDispatchSort(renderCommandBuffer_, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
     // ================== tile boundary =========================
     vkCmdFillBuffer(renderCommandBuffer_, 

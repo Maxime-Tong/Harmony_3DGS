@@ -7,7 +7,7 @@
 #include <vulkan/vulkan.h>
 #include <rawfile/raw_file_manager.h>
 
-#define FRAMES_IN_FLIGHT 1
+#define FRAMES_IN_FLIGHT 2
 
 struct RendererConfiguration {
     float fov = 45.0f;

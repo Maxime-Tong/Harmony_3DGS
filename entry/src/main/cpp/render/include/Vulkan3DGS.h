@@ -119,7 +119,7 @@ private:
     std::shared_ptr<DescriptorSet> inputSet;
     
     uint32_t numRadixSortBlocksPerWorkgroup = 32;
-    unsigned int sortBufferSizeMultiplier = 8;
+    uint32_t sortBufferSize;
     
     uint32_t currentImageIndex;
     
