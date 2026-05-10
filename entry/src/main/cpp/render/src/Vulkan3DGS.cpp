@@ -244,7 +244,7 @@ void Vulkan3DGS::createRenderPipeline() {
     inputSet->bindBufferToDescriptorSet(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, sortValueBufferEven);
     inputSet->build();
 
-    auto outputSet = std::make_shared<DescriptorSet>(context, 1);
+    auto outputSet = std::make_shared<DescriptorSet>(context, FRAMES_IN_FLIGHT);
     for (auto& image : swapchain->swapchainImages) {
         outputSet->bindImageToDescriptorSet(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, image);
     }
@@ -334,15 +334,18 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
 bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     // LOGI("Recording render command buffer for frame %{public}d", currentFrame);
 
-    if (!renderCommandBuffer_) {
+    if (renderCommandBuffers_.empty()) {
+        renderCommandBuffers_.resize(FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
         VkCommandBufferAllocateInfo allocInfo = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = commandPool_,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1
+            .commandBufferCount = FRAMES_IN_FLIGHT
         };
-        vkAllocateCommandBuffers(context->device_, &allocInfo, &renderCommandBuffer_);
+        vkAllocateCommandBuffers(context->device_, &allocInfo, renderCommandBuffers_.data());
     }
+
+    VkCommandBuffer renderCommandBuffer = renderCommandBuffers_[currentFrame];
 
     uint32_t numInstances = totalSumBufferHost->readOne<uint32_t>();
     
@@ -362,38 +365,38 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
         return false;
     }
 
-    vkResetCommandBuffer(renderCommandBuffer_, 0);
+    vkResetCommandBuffer(renderCommandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = 0
     };
-    vkBeginCommandBuffer(renderCommandBuffer_, &beginInfo);
+    vkBeginCommandBuffer(renderCommandBuffer, &beginInfo);
 
-    vertexAttributeBuffer->computeWriteReadBarrier(renderCommandBuffer_);
+    vertexAttributeBuffer->computeWriteReadBarrier(renderCommandBuffer);
 
     // ================== preprocess sort =========================
     const auto iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
     auto numGroups = (scene->getNumVertices() + 255) / 256;
-    preprocessSortPipeline->bind(renderCommandBuffer_, 0, iters % 2 == 0 ? 0 : 1);
+    preprocessSortPipeline->bind(renderCommandBuffer, currentFrame, iters % 2 == 0 ? 0 : 1);
     
 //    renderCommandBuffer_->writeTimestamp(vk::PipelineStageFlagBits::eComputeShader, context->queryPool.get(),
 //                                            queryManager->registerQuery("preprocess_sort_start"));
     uint32_t tileX = (swapchain->swapchainExtent.width + 16 - 1) / 16;
-    vkCmdPushConstants(renderCommandBuffer_, 
+    vkCmdPushConstants(renderCommandBuffer, 
                        preprocessSortPipeline->pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 
                        0, 
                        sizeof(uint32_t), 
                        &tileX);
-    vkCmdDispatch(renderCommandBuffer_, numGroups, 1, 1);
+    vkCmdDispatch(renderCommandBuffer, numGroups, 1, 1);
 
-    sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer_);
+    sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer);
 //    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
-    sorter->cmdDispatchSort(renderCommandBuffer_, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
+    sorter->cmdDispatchSort(renderCommandBuffer, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
     // ================== tile boundary =========================
-    vkCmdFillBuffer(renderCommandBuffer_, 
+    vkCmdFillBuffer(renderCommandBuffer, 
                 tileBoundaryBuffer->vkBuffer, 
                 0, 
                 VK_WHOLE_SIZE, 
@@ -404,28 +407,28 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
         .addBufferBarrier(tileBoundaryBuffer, 
                           VK_ACCESS_TRANSFER_WRITE_BIT,
                           VK_ACCESS_SHADER_WRITE_BIT)
-        .build(renderCommandBuffer_, 
+        .build(renderCommandBuffer, 
                VK_PIPELINE_STAGE_TRANSFER_BIT,
                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     
-    tileBoundaryPipeline->bind(renderCommandBuffer_, 0, 0);
+    tileBoundaryPipeline->bind(renderCommandBuffer, currentFrame, 0);
 
-    vkCmdPushConstants(renderCommandBuffer_, 
+    vkCmdPushConstants(renderCommandBuffer, 
                        tileBoundaryPipeline->pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 
                        0, 
                        sizeof(uint32_t), 
                        &numInstances);
-    vkCmdDispatch(renderCommandBuffer_, (numInstances + 255) / 256, 1, 1);
+    vkCmdDispatch(renderCommandBuffer, (numInstances + 255) / 256, 1, 1);
 
     // ======================== render ==============================
     std::vector<uint32_t> descriptorSets = {0, currentImageIndex};
-    renderPipeline->bind(renderCommandBuffer_, 0, descriptorSets);
+    renderPipeline->bind(renderCommandBuffer, currentFrame, descriptorSets);
     
     auto [width, height] = swapchain->swapchainExtent;
     uint32_t constants[2] = {width, height};
     
-    vkCmdPushConstants(renderCommandBuffer_, 
+    vkCmdPushConstants(renderCommandBuffer, 
                        renderPipeline->pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 
                        0, 
@@ -451,7 +454,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
             .layerCount = 1
         }
     };
-    vkCmdPipelineBarrier(renderCommandBuffer_,
+    vkCmdPipelineBarrier(renderCommandBuffer,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT,
@@ -459,7 +462,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
                          0, nullptr,
                          1, &imageMemoryBarrier);
 
-    vkCmdDispatch(renderCommandBuffer_, (width + 15) / 16, (height + 15) / 16, 1);
+    vkCmdDispatch(renderCommandBuffer, (width + 15) / 16, (height + 15) / 16, 1);
 
     // image layout transition: general -> present
     imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -486,13 +489,13 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
         }
     };
     
-    vkCmdPipelineBarrier(renderCommandBuffer_,
+    vkCmdPipelineBarrier(renderCommandBuffer,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT,
                          0, nullptr, 0, nullptr, 1, &imageMemoryBarrierGenToPre);
 
-    vkEndCommandBuffer(renderCommandBuffer_);
+    vkEndCommandBuffer(renderCommandBuffer);
 
     return true;
 }
@@ -552,11 +555,11 @@ void Vulkan3DGS::updateUniforms() {
 }
 
 void Vulkan3DGS::draw() {
-    CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[0], VK_TRUE, UINT64_MAX));
-    CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[0]));
+    CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
+    CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
 
     auto res = vkAcquireNextImageKHR(context->device_, swapchain->vkSwapchain, UINT64_MAX,
-                          swapchain->imageAvailableSemaphores[0],
+                          swapchain->imageAvailableSemaphores[currentFrameIndex],
                           nullptr, &currentImageIndex);
 
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -582,29 +585,29 @@ void Vulkan3DGS::draw() {
             .pCommandBuffers = &preprocessCommandBuffer_
         };
         
-        CheckResult(vkQueueSubmit(context->computeQueue_, 1, &submitInfo, context->inFlightFences_[0]));
-        CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[0], VK_TRUE, UINT64_MAX));
-        CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[0]));
+        CheckResult(vkQueueSubmit(context->computeQueue_, 1, &submitInfo, context->inFlightFences_[currentFrameIndex]));
+        CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
+        CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
         
-    } while (!recordRenderCommandBuffer(0));
+    } while (!recordRenderCommandBuffer(currentFrameIndex));
         
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo renderSubmitInfo = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &swapchain->imageAvailableSemaphores[0], // 等待图像就绪
+        .pWaitSemaphores = &swapchain->imageAvailableSemaphores[currentFrameIndex], // 等待图像就绪
         .pWaitDstStageMask = &waitStage,
         .commandBufferCount = 1,
-        .pCommandBuffers = &renderCommandBuffer_,
+        .pCommandBuffers = &renderCommandBuffers_[currentFrameIndex],
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &context->renderFinishedSemaphores_[0] // 信号：渲染完成
+        .pSignalSemaphores = &context->renderFinishedSemaphores_[currentFrameIndex] // 信号：渲染完成
     };
-    CheckResult(vkQueueSubmit(context->computeQueue_, 1, &renderSubmitInfo, context->inFlightFences_[0]));
+    CheckResult(vkQueueSubmit(context->computeQueue_, 1, &renderSubmitInfo, context->inFlightFences_[currentFrameIndex]));
     
     VkPresentInfoKHR presentInfo = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &context->renderFinishedSemaphores_[0],
+        .pWaitSemaphores = &context->renderFinishedSemaphores_[currentFrameIndex],
         .swapchainCount = 1,
         .pSwapchains = &swapchain->vkSwapchain,
         .pImageIndices = &currentImageIndex
@@ -613,6 +616,8 @@ void Vulkan3DGS::draw() {
     if (ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR) {
         recreateSwapchain();
     }
+
+    currentFrameIndex = (currentFrameIndex + 1) % FRAMES_IN_FLIGHT;
 }
 
 void Vulkan3DGS::waitDeviceIde() {

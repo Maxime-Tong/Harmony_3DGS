@@ -92,7 +92,7 @@ private:
 
     VkCommandPool commandPool_;
     VkCommandBuffer preprocessCommandBuffer_;
-    VkCommandBuffer renderCommandBuffer_;
+    std::vector<VkCommandBuffer> renderCommandBuffers_;
     
     std::shared_ptr<ComputePipeline> preprocessPipeline;
     std::shared_ptr<ComputePipeline> renderPipeline;
@@ -122,6 +122,7 @@ private:
     uint32_t sortBufferSize;
     
     uint32_t currentImageIndex;
+    uint32_t currentFrameIndex = 0;
     
     std::vector<Camera> testCameras;
     uint32_t testCameraIndex = 0;
