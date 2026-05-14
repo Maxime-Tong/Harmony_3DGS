@@ -34,6 +34,40 @@ int inline highestBit(uint32_t x) {
     return 0;
 }
 
+uint32_t Vulkan3DGS::beginTimestamp(VkCommandBuffer commandBuffer, const char* label) {
+    if (timestampQueryCursor_ + 1 >= kTimestampQueryCount) {
+        LOGE("Timestamp query pool exhausted while starting %{public}s", label);
+        return timestampQueryCursor_;
+    }
+
+    uint32_t startQuery = timestampQueryCursor_++;
+    vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, context->queryPool_, startQuery);
+    return startQuery;
+}
+
+void Vulkan3DGS::endTimestamp(VkCommandBuffer commandBuffer, std::vector<GpuTimingRange>& timings,
+                              const char* label, uint32_t startQuery) {
+    if (timestampQueryCursor_ >= kTimestampQueryCount) {
+        LOGE("Timestamp query pool exhausted while ending %{public}s", label);
+        return;
+    }
+
+    uint32_t endQuery = timestampQueryCursor_++;
+    vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, context->queryPool_, endQuery);
+    timings.push_back(GpuTimingRange{label, startQuery, endQuery});
+}
+
+void Vulkan3DGS::logTimingRanges(const char* phaseName, const std::vector<GpuTimingRange>& timings) const {
+    for (const auto& timing : timings) {
+        const double runtimeMs = context->GetTimestampDurationMs(timing.startQuery, timing.endQuery);
+        if (runtimeMs >= 0.0) {
+            LOGI("%{public}s - %{public}s runtime: %{public}.3f ms", phaseName, timing.label.c_str(), runtimeMs);
+        } else {
+            LOGI("%{public}s - %{public}s runtime: unavailable", phaseName, timing.label.c_str());
+        }
+    }
+}
+
 void Vulkan3DGS::setConfig(uint64_t width, uint64_t height, OHNativeWindow* window, NativeResourceManager* resourceManager) {
     config_.image_width = static_cast<int>(width);
     config_.image_height = static_cast<int>(height);
@@ -279,15 +313,21 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
     }
 
     vkResetCommandBuffer(preprocessCommandBuffer_, 0);
+    preprocessTimings_.clear();
     VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(preprocessCommandBuffer_, &beginInfo);
+
+    // Reset the timestamp pool before recording the frame so query slots are valid when reused.
+    context->ResetTimestampQueryPool(preprocessCommandBuffer_, kTimestampQueryCount);
 
     uint32_t numVertices = scene->getNumVertices();
     uint32_t numGroups = (numVertices + 255) / 256;
     
     // Preprocess
+    uint32_t preprocessStart = beginTimestamp(preprocessCommandBuffer_, "preprocess");
     preprocessPipeline->bind(preprocessCommandBuffer_, 0, 0);
     vkCmdDispatch(preprocessCommandBuffer_, numGroups, 1, 1);
+    endTimestamp(preprocessCommandBuffer_, preprocessTimings_, "preprocess", preprocessStart);
     
     // // 2. Copy to PrefixSum Buffer
     // tileOverlapBuffer->computeWriteReadBarrier(preprocessCommandBuffer_);
@@ -297,6 +337,7 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
     prefixSumPingBuffer->computeWriteReadBarrier(preprocessCommandBuffer_);
 
     // 3. Prefix Sum Iterations
+    uint32_t prefixSumStart = beginTimestamp(preprocessCommandBuffer_, "prefix_sum");
     prefixSumPipeline->bind(preprocessCommandBuffer_, 0, 0);
     uint32_t iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
     LOGI("Prefix sum iterations: %{public}d", iters);
@@ -313,6 +354,8 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
             prefixSumPongBuffer->computeReadWriteBarrier(preprocessCommandBuffer_);
         }
     }
+
+    endTimestamp(preprocessCommandBuffer_, preprocessTimings_, "prefix_sum", prefixSumStart);
 
     VkBufferCopy totalSumRegion = { 
         .srcOffset = (numVertices - 1) * sizeof(uint32_t),
@@ -366,6 +409,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     }
 
     vkResetCommandBuffer(renderCommandBuffer, 0);
+    renderTimings_.clear();
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = 0
@@ -382,6 +426,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
 //    renderCommandBuffer_->writeTimestamp(vk::PipelineStageFlagBits::eComputeShader, context->queryPool.get(),
 //                                            queryManager->registerQuery("preprocess_sort_start"));
     uint32_t tileX = (swapchain->swapchainExtent.width + 16 - 1) / 16;
+    uint32_t preprocessSortStart = beginTimestamp(renderCommandBuffer, "preprocess_sort");
     vkCmdPushConstants(renderCommandBuffer, 
                        preprocessSortPipeline->pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 
@@ -389,12 +434,15 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
                        sizeof(uint32_t), 
                        &tileX);
     vkCmdDispatch(renderCommandBuffer, numGroups, 1, 1);
+    endTimestamp(renderCommandBuffer, renderTimings_, "preprocess_sort", preprocessSortStart);
 
     sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer);
 //    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
     
     // ================== sort =========================
+    uint32_t sortStart = beginTimestamp(renderCommandBuffer, "sort");
     sorter->cmdDispatchSort(renderCommandBuffer, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
+    endTimestamp(renderCommandBuffer, renderTimings_, "sort", sortStart);
     // ================== tile boundary =========================
     vkCmdFillBuffer(renderCommandBuffer, 
                 tileBoundaryBuffer->vkBuffer, 
@@ -413,6 +461,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
     
     tileBoundaryPipeline->bind(renderCommandBuffer, currentFrame, 0);
 
+    uint32_t tileBoundaryStart = beginTimestamp(renderCommandBuffer, "tile_boundary");
     vkCmdPushConstants(renderCommandBuffer, 
                        tileBoundaryPipeline->pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 
@@ -420,6 +469,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
                        sizeof(uint32_t), 
                        &numInstances);
     vkCmdDispatch(renderCommandBuffer, (numInstances + 255) / 256, 1, 1);
+    endTimestamp(renderCommandBuffer, renderTimings_, "tile_boundary", tileBoundaryStart);
 
     // ======================== render ==============================
     std::vector<uint32_t> descriptorSets = {0, currentImageIndex};
@@ -462,7 +512,9 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
                          0, nullptr,
                          1, &imageMemoryBarrier);
 
+    uint32_t renderStart = beginTimestamp(renderCommandBuffer, "render");
     vkCmdDispatch(renderCommandBuffer, (width + 15) / 16, (height + 15) / 16, 1);
+    endTimestamp(renderCommandBuffer, renderTimings_, "render", renderStart);
 
     // image layout transition: general -> present
     imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -558,6 +610,9 @@ void Vulkan3DGS::draw() {
     CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
     CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
 
+    // Reset timestamp cursor for this new frame so recorded queries use fresh slots
+    timestampQueryCursor_ = 0;
+
     auto res = vkAcquireNextImageKHR(context->device_, swapchain->vkSwapchain, UINT64_MAX,
                           swapchain->imageAvailableSemaphores[currentFrameIndex],
                           nullptr, &currentImageIndex);
@@ -615,6 +670,17 @@ void Vulkan3DGS::draw() {
     auto ret = vkQueuePresentKHR(context->presentQueue_, &presentInfo);
     if (ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR) {
         recreateSwapchain();
+    }
+
+    // Current frame is complete enough to read back and log the timings we just recorded.
+    CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
+    if (!preprocessTimings_.empty()) {
+        logTimingRanges("preprocess", preprocessTimings_);
+        // preprocessTimings_.clear();
+    }
+    if (!renderTimings_.empty()) {
+        logTimingRanges("render", renderTimings_);
+        // renderTimings_.clear();
     }
 
     currentFrameIndex = (currentFrameIndex + 1) % FRAMES_IN_FLIGHT;

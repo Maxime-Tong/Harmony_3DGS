@@ -13,8 +13,8 @@ struct RendererConfiguration {
     float fov = 45.0f;
     float near = 0.2f;
     float far = 1000.0f;
-    std::string scene = "models/small_dragon/point_cloud.ply";
-    std::string testCameras = "models/small_dragon/cameras.json";
+    std::string scene = "models/plant_whitepalm/point_cloud.ply";
+    std::string testCameras = "models/plant_whitepalm/cameras.json";
     
     int image_height = 720;
     int image_width = 1280;
@@ -55,6 +55,8 @@ public:
     bool CreateSyncObjects();           // 创建Fence和Semaphore
     bool CreateDescriptorPool();        // 创建描述符池
     bool CreateQueryPool();             // 创建查询池（GPU计时）
+    void ResetTimestampQueryPool(VkCommandBuffer commandBuffer, uint32_t queryCount);
+    double GetTimestampDurationMs(uint32_t startQuery, uint32_t endQuery) const;
     
     // command buffer
     VkCommandBuffer beginOneTimeCommandBuffer();
@@ -89,6 +91,7 @@ public:
     
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkQueryPool queryPool_ = VK_NULL_HANDLE;
+    float timestampPeriod_ = 0.0f;
     
     std::vector<const char*> instanceExtensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,

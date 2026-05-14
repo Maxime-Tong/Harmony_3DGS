@@ -113,6 +113,10 @@ bool Context::PickPhysicalDevice() {
 bool Context::CreateLogicalDevice() {
     indices_ = FindQueueFamilies(physicalDevice_);
 
+    VkPhysicalDeviceProperties deviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    timestampPeriod_ = deviceProperties.limits.timestampPeriod;
+
     std::set<uint32_t> uniqueQueueFamilies;
     uniqueQueueFamilies.insert(static_cast<uint32_t>(indices_.graphicsFamily));
     uniqueQueueFamilies.insert(static_cast<uint32_t>(indices_.presentFamily));
@@ -385,8 +389,8 @@ bool Context::CreateDescriptorPool() {
 
 bool Context::CreateQueryPool() {
     // GPU时间戳查询池，用于性能分析（3DGS各阶段计时）
-    // 参照原实现：preprocess, prefix_sum, sort, tile_boundary, render 等阶段
-    constexpr uint32_t QUERY_COUNT = 12;  // 6对开始/结束时间戳
+    // 预留足够的查询对，覆盖 preprocess、prefix_sum、多次迭代与 render 等阶段
+    constexpr uint32_t QUERY_COUNT = 256;
     
     VkQueryPoolCreateInfo queryPoolInfo{};
     queryPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -407,6 +411,29 @@ bool Context::CreateQueryPool() {
     endOneTimeCommandBuffer(cmd, computeQueue_); 
     LOGI("Query pool created and reset (%d queries)", QUERY_COUNT);
     return true;
+}
+
+void Context::ResetTimestampQueryPool(VkCommandBuffer commandBuffer, uint32_t queryCount) {
+    if (queryPool_ == VK_NULL_HANDLE || queryCount == 0) {
+        return;
+    }
+
+    vkCmdResetQueryPool(commandBuffer, queryPool_, 0, queryCount);
+}
+
+double Context::GetTimestampDurationMs(uint32_t startQuery, uint32_t endQuery) const {
+    if (queryPool_ == VK_NULL_HANDLE || timestampPeriod_ <= 0.0f) {
+        return -1.0;
+    }
+
+    uint64_t timestamps[2]{};
+    VkResult result = vkGetQueryPoolResults(device_, queryPool_, startQuery, 2, sizeof(timestamps),
+                                            timestamps, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (result != VK_SUCCESS || timestamps[1] < timestamps[0]) {
+        return -1.0;
+    }
+
+    return static_cast<double>(timestamps[1] - timestamps[0]) * static_cast<double>(timestampPeriod_) / 1000000.0;
 }
 
 

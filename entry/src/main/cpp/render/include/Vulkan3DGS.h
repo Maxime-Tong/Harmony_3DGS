@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 struct alignas(16) UniformBuffer {
     glm::vec4 camera_position;
@@ -82,6 +84,19 @@ public:
     void waitDeviceIde();
 
 private:
+    struct GpuTimingRange {
+        std::string label;
+        uint32_t startQuery = 0;
+        uint32_t endQuery = 0;
+    };
+
+    static constexpr uint32_t kTimestampQueryCount = 256;
+
+    uint32_t beginTimestamp(VkCommandBuffer commandBuffer, const char* label);
+    void endTimestamp(VkCommandBuffer commandBuffer, std::vector<GpuTimingRange>& timings,
+                      const char* label, uint32_t startQuery);
+    void logTimingRanges(const char* phaseName, const std::vector<GpuTimingRange>& timings) const;
+
     bool initialized_ = false;
 
     RendererConfiguration config_;
@@ -123,7 +138,11 @@ private:
     
     uint32_t currentImageIndex;
     uint32_t currentFrameIndex = 0;
-    
+
+    uint32_t timestampQueryCursor_ = 0;
+    std::vector<GpuTimingRange> preprocessTimings_;
+    std::vector<GpuTimingRange> renderTimings_;
+
     std::vector<Camera> testCameras;
     uint32_t testCameraIndex = 0;
     uint32_t direction = 1;
