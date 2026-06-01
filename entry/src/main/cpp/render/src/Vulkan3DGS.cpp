@@ -8,6 +8,7 @@
 #include <native_window/external_window.h>
 
 #include <hilog/log.h>
+#include <thread>
 
 #undef LOG_TAG
 #define LOG_TAG "Vulkan3DGS"
@@ -53,6 +54,7 @@ void Vulkan3DGS::initialize() {
     createPreprocessSortPipeline();
     createTileBoundaryPipeline();
     createRenderPipeline();
+    createCachedOutputImage();
     createCommandPool();
     recordPreprocessCommandBuffer();
 }
@@ -256,6 +258,80 @@ void Vulkan3DGS::createRenderPipeline() {
     renderPipeline->build();
 }
 
+void Vulkan3DGS::createCachedOutputImage() {
+    destroyCachedOutputImage();
+
+    if (!swapchain || swapchain->swapchainExtent.width == 0 || swapchain->swapchainExtent.height == 0) {
+        return;
+    }
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = swapchain->swapchainFormat;
+    imageInfo.extent = {
+        swapchain->swapchainExtent.width,
+        swapchain->swapchainExtent.height,
+        1
+    };
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+    VkResult result = vmaCreateImage(context->allocator, &imageInfo, &allocInfo, &cachedOutputImage_, &cachedOutputImageAllocation_, nullptr);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create cached output image: %{public}d", result);
+        cachedOutputImage_ = VK_NULL_HANDLE;
+        cachedOutputImageAllocation_ = VK_NULL_HANDLE;
+        return;
+    }
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = cachedOutputImage_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = swapchain->swapchainFormat;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    result = vkCreateImageView(context->device_, &viewInfo, nullptr, &cachedOutputImageView_);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create cached output image view: %{public}d", result);
+        vmaDestroyImage(context->allocator, cachedOutputImage_, cachedOutputImageAllocation_);
+        cachedOutputImage_ = VK_NULL_HANDLE;
+        cachedOutputImageAllocation_ = VK_NULL_HANDLE;
+        return;
+    }
+
+    cachedOutputImageValid_ = false;
+}
+
+void Vulkan3DGS::destroyCachedOutputImage() {
+    if (cachedOutputImageView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(context->device_, cachedOutputImageView_, nullptr);
+        cachedOutputImageView_ = VK_NULL_HANDLE;
+    }
+
+    if (cachedOutputImage_ != VK_NULL_HANDLE) {
+        vmaDestroyImage(context->allocator, cachedOutputImage_, cachedOutputImageAllocation_);
+        cachedOutputImage_ = VK_NULL_HANDLE;
+        cachedOutputImageAllocation_ = VK_NULL_HANDLE;
+    }
+
+    cachedOutputImageValid_ = false;
+}
+
 void Vulkan3DGS::createCommandPool() {
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -331,9 +407,7 @@ void Vulkan3DGS::recordPreprocessCommandBuffer() {
     vkEndCommandBuffer(preprocessCommandBuffer_);
 }
 
-bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
-    // LOGI("Recording render command buffer for frame %{public}d", currentFrame);
-
+bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame, bool renderScene) {
     if (renderCommandBuffers_.empty()) {
         renderCommandBuffers_.resize(FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
         VkCommandBufferAllocateInfo allocInfo = {
@@ -345,104 +419,293 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
         vkAllocateCommandBuffers(context->device_, &allocInfo, renderCommandBuffers_.data());
     }
 
+    renderScene = renderScene || cachedOutputImage_ == VK_NULL_HANDLE || !cachedOutputImageValid_; 
+
     VkCommandBuffer renderCommandBuffer = renderCommandBuffers_[currentFrame];
-
-    uint32_t numInstances = totalSumBufferHost->readOne<uint32_t>();
-    
-    if (numInstances > sortBufferSize) {
-        auto old = sortBufferSize;
-        
-        uint32_t sortBufferSizeMultiplier = 1;
-        while (numInstances > sortBufferSize * sortBufferSizeMultiplier) {
-            sortBufferSizeMultiplier++;
-        }
-        sortBufferSize *= sortBufferSizeMultiplier;
-
-        LOGI("Reallocating sort buffers. %{public}d -> %{public}d", old, sortBufferSize);
-        sortKeyBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
-        sortValueBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
-        recordPreprocessCommandBuffer();
-        return false;
-    }
-
     vkResetCommandBuffer(renderCommandBuffer, 0);
+
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = 0
     };
     vkBeginCommandBuffer(renderCommandBuffer, &beginInfo);
 
-    vertexAttributeBuffer->computeWriteReadBarrier(renderCommandBuffer);
+    auto recordPresentTransition = [&](VkImage image, VkImageLayout oldLayout, VkAccessFlags srcAccess, VkPipelineStageFlags srcStage) {
+        VkImageMemoryBarrier imageBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = srcAccess,
+            .dstAccessMask = 0,
+            .oldLayout = oldLayout,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
 
-    // ================== preprocess sort =========================
-    const auto iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
-    auto numGroups = (scene->getNumVertices() + 255) / 256;
-    preprocessSortPipeline->bind(renderCommandBuffer, currentFrame, iters % 2 == 0 ? 0 : 1);
-    
-//    renderCommandBuffer_->writeTimestamp(vk::PipelineStageFlagBits::eComputeShader, context->queryPool.get(),
-//                                            queryManager->registerQuery("preprocess_sort_start"));
-    uint32_t tileX = (swapchain->swapchainExtent.width + 16 - 1) / 16;
-    vkCmdPushConstants(renderCommandBuffer, 
-                       preprocessSortPipeline->pipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 
-                       0, 
-                       sizeof(uint32_t), 
-                       &tileX);
-    vkCmdDispatch(renderCommandBuffer, numGroups, 1, 1);
+        vkCmdPipelineBarrier(renderCommandBuffer,
+                             srcStage,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             VK_DEPENDENCY_BY_REGION_BIT,
+                             0, nullptr,
+                             0, nullptr,
+                             1, &imageBarrier);
+    };
 
-    sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer);
-//    assert(numInstances <= scene->getNumVertices() * sortBufferSizeMultiplier);
-    
-    // ================== sort =========================
-    sorter->cmdDispatchSort(renderCommandBuffer, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
-    // ================== tile boundary =========================
-    vkCmdFillBuffer(renderCommandBuffer, 
-                tileBoundaryBuffer->vkBuffer, 
-                0, 
-                VK_WHOLE_SIZE, 
-                0);
+    auto recordCopyImage = [&](VkImage srcImage, VkImage dstImage, VkExtent2D extent,
+                               VkImageLayout srcLayout, VkImageLayout dstLayout) {
+        VkImageCopy copyRegion{};
+        copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.srcSubresource.mipLevel = 0;
+        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.layerCount = 1;
+        copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.dstSubresource.mipLevel = 0;
+        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.layerCount = 1;
+        copyRegion.extent = {extent.width, extent.height, 1};
 
-    BarrierBuilder()
-        .queueFamilyIndex(context->indices_.computeFamily)
-        .addBufferBarrier(tileBoundaryBuffer, 
-                          VK_ACCESS_TRANSFER_WRITE_BIT,
-                          VK_ACCESS_SHADER_WRITE_BIT)
-        .build(renderCommandBuffer, 
-               VK_PIPELINE_STAGE_TRANSFER_BIT,
-               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    
-    tileBoundaryPipeline->bind(renderCommandBuffer, currentFrame, 0);
+        vkCmdCopyImage(renderCommandBuffer,
+                       srcImage,
+                       srcLayout,
+                       dstImage,
+                       dstLayout,
+                       1,
+                       &copyRegion);
+    };
 
-    vkCmdPushConstants(renderCommandBuffer, 
-                       tileBoundaryPipeline->pipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 
-                       0, 
-                       sizeof(uint32_t), 
-                       &numInstances);
-    vkCmdDispatch(renderCommandBuffer, (numInstances + 255) / 256, 1, 1);
+    if (renderScene) {
+        uint32_t numInstances = totalSumBufferHost->readOne<uint32_t>();
 
-    // ======================== render ==============================
-    std::vector<uint32_t> descriptorSets = {0, currentImageIndex};
-    renderPipeline->bind(renderCommandBuffer, currentFrame, descriptorSets);
-    
-    auto [width, height] = swapchain->swapchainExtent;
-    uint32_t constants[2] = {width, height};
-    
-    vkCmdPushConstants(renderCommandBuffer, 
-                       renderPipeline->pipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 
-                       0, 
-                       sizeof(uint32_t) * 2, 
-                       constants);
+        if (numInstances > sortBufferSize) {
+            auto old = sortBufferSize;
 
-    // image layout transition: undefined -> general
-    VkImageMemoryBarrier imageMemoryBarrier = {
+            uint32_t sortBufferSizeMultiplier = 1;
+            while (numInstances > sortBufferSize * sortBufferSizeMultiplier) {
+                sortBufferSizeMultiplier++;
+            }
+            sortBufferSize *= sortBufferSizeMultiplier;
+
+            LOGI("Reallocating sort buffers. %{public}d -> %{public}d", old, sortBufferSize);
+            sortKeyBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
+            sortValueBufferEven->realloc(sizeof(uint32_t) * sortBufferSize);
+            recordPreprocessCommandBuffer();
+            vkEndCommandBuffer(renderCommandBuffer);
+            return false;
+        }
+
+        vertexAttributeBuffer->computeWriteReadBarrier(renderCommandBuffer);
+
+        const auto iters = static_cast<uint32_t>(std::ceil(std::log2(static_cast<float>(scene->getNumVertices()))));
+        auto numGroups = (scene->getNumVertices() + 255) / 256;
+        preprocessSortPipeline->bind(renderCommandBuffer, currentFrame, iters % 2 == 0 ? 0 : 1);
+
+        uint32_t tileX = (swapchain->swapchainExtent.width + 16 - 1) / 16;
+        vkCmdPushConstants(renderCommandBuffer,
+                           preprocessSortPipeline->pipelineLayout,
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                           0,
+                           sizeof(uint32_t),
+                           &tileX);
+        vkCmdDispatch(renderCommandBuffer, numGroups, 1, 1);
+
+        sortValueBufferEven->computeWriteReadBarrier(renderCommandBuffer);
+
+        sorter->cmdDispatchSort(renderCommandBuffer, sortKeyBufferEven, sortValueBufferEven, sortCountBuffer);
+
+        vkCmdFillBuffer(renderCommandBuffer,
+                        tileBoundaryBuffer->vkBuffer,
+                        0,
+                        VK_WHOLE_SIZE,
+                        0);
+
+        BarrierBuilder()
+            .queueFamilyIndex(context->indices_.computeFamily)
+            .addBufferBarrier(tileBoundaryBuffer,
+                              VK_ACCESS_TRANSFER_WRITE_BIT,
+                              VK_ACCESS_SHADER_WRITE_BIT)
+            .build(renderCommandBuffer,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        tileBoundaryPipeline->bind(renderCommandBuffer, currentFrame, 0);
+
+        vkCmdPushConstants(renderCommandBuffer,
+                           tileBoundaryPipeline->pipelineLayout,
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                           0,
+                           sizeof(uint32_t),
+                           &numInstances);
+        vkCmdDispatch(renderCommandBuffer, (numInstances + 255) / 256, 1, 1);
+
+        std::vector<uint32_t> descriptorSets = {0, currentImageIndex};
+        renderPipeline->bind(renderCommandBuffer, currentFrame, descriptorSets);
+
+        auto [width, height] = swapchain->swapchainExtent;
+        uint32_t constants[2] = {width, height};
+
+        vkCmdPushConstants(renderCommandBuffer,
+                           renderPipeline->pipelineLayout,
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                           0,
+                           sizeof(uint32_t) * 2,
+                           constants);
+
+        VkImageMemoryBarrier imageMemoryBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_NONE,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = swapchain->swapchainImages[currentImageIndex]->image,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
+        vkCmdPipelineBarrier(renderCommandBuffer,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_DEPENDENCY_BY_REGION_BIT,
+                             0, nullptr,
+                             0, nullptr,
+                             1, &imageMemoryBarrier);
+
+        vkCmdDispatch(renderCommandBuffer, (width + 15) / 16, (height + 15) / 16, 1);
+
+        if (cachedOutputImage_ != VK_NULL_HANDLE) {
+            VkImageMemoryBarrier cacheBarrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .oldLayout = cachedOutputImageValid_ ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = cachedOutputImage_,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1
+                }
+            };
+
+            VkImageMemoryBarrier swapchainToTransfer = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = swapchain->swapchainImages[currentImageIndex]->image,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1
+                }
+            };
+
+            VkImageMemoryBarrier copyBarriers[2] = {swapchainToTransfer, cacheBarrier};
+            vkCmdPipelineBarrier(renderCommandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_DEPENDENCY_BY_REGION_BIT,
+                                 0, nullptr,
+                                 0, nullptr,
+                                 2, copyBarriers);
+
+            recordCopyImage(swapchain->swapchainImages[currentImageIndex]->image,
+                            cachedOutputImage_,
+                            swapchain->swapchainExtent,
+                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkImageMemoryBarrier cacheToGeneral = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = 0,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = cachedOutputImage_,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1
+                }
+            };
+
+            VkImageMemoryBarrier swapchainToPresent = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .dstAccessMask = 0,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = swapchain->swapchainImages[currentImageIndex]->image,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1
+                }
+            };
+
+            VkImageMemoryBarrier presentBarriers[2] = {swapchainToPresent, cacheToGeneral};
+            vkCmdPipelineBarrier(renderCommandBuffer,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                 VK_DEPENDENCY_BY_REGION_BIT,
+                                 0, nullptr,
+                                 0, nullptr,
+                                 2, presentBarriers);
+
+            cachedOutputImageValid_ = true;
+        } else {
+            recordPresentTransition(swapchain->swapchainImages[currentImageIndex]->image,
+                                    VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_ACCESS_SHADER_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+
+        vkEndCommandBuffer(renderCommandBuffer);
+        return true;
+    }
+
+    VkImageMemoryBarrier swapchainToDst = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .pNext = nullptr,
         .srcAccessMask = VK_ACCESS_NONE,
-        .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = swapchain->swapchainImages[currentImageIndex]->image,
@@ -454,28 +717,66 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
             .layerCount = 1
         }
     };
+
+    VkImageMemoryBarrier cacheToSrc = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = cachedOutputImage_,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    VkImageMemoryBarrier copyBarriers[2] = {swapchainToDst, cacheToSrc};
     vkCmdPipelineBarrier(renderCommandBuffer,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT,
                          0, nullptr,
                          0, nullptr,
-                         1, &imageMemoryBarrier);
+                         2, copyBarriers);
 
-    vkCmdDispatch(renderCommandBuffer, (width + 15) / 16, (height + 15) / 16, 1);
+    recordCopyImage(cachedOutputImage_,
+                    swapchain->swapchainImages[currentImageIndex]->image,
+                    swapchain->swapchainExtent,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-    // image layout transition: general -> present
-    imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imageMemoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    
-    VkImageMemoryBarrier imageMemoryBarrierGenToPre = {
+    VkImageMemoryBarrier cacheToGeneral = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         .dstAccessMask = 0,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = cachedOutputImage_,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    VkImageMemoryBarrier swapchainToPresent = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -488,15 +789,17 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame) {
             .layerCount = 1
         }
     };
-    
+
+    VkImageMemoryBarrier presentBarriers[2] = {swapchainToPresent, cacheToGeneral};
     vkCmdPipelineBarrier(renderCommandBuffer,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT,
-                         0, nullptr, 0, nullptr, 1, &imageMemoryBarrierGenToPre);
+                         0, nullptr,
+                         0, nullptr,
+                         2, presentBarriers);
 
     vkEndCommandBuffer(renderCommandBuffer);
-
     return true;
 }
 
@@ -505,6 +808,8 @@ void Vulkan3DGS::recreateSwapchain() {
     LOGI("Recreating swapchain");
     
     swapchain->recreate();
+    createRenderPipeline();
+    createCachedOutputImage();
     
     auto [width, height] = swapchain->swapchainExtent;
     auto [oldWidth, oldHeight] = oldExtent;
@@ -517,7 +822,6 @@ void Vulkan3DGS::recreateSwapchain() {
     tileBoundaryBuffer->realloc(tileX * tileY * sizeof(uint32_t) * 2);
 
     recordPreprocessCommandBuffer();
-    createRenderPipeline();
 }
 
 void Vulkan3DGS::updateUniforms() {
@@ -571,25 +875,37 @@ void Vulkan3DGS::draw() {
 
     camera = testCameras[testCameraIndex];
     updateUniforms();
-
+    
+    bool renderScene = (drawCallIndex_ % 2 == 0) || !cachedOutputImageValid_;
+//    bool renderScene = true;
+    drawCallIndex_++;
+    
     int nextCameraIndex = testCameraIndex + direction;
-    if (nextCameraIndex >= testCameras.size() || nextCameraIndex < 0) {
+    if (nextCameraIndex >= testCameras.size() - 5 || nextCameraIndex < 0) {
         direction = -direction;
     }
     testCameraIndex += direction;
+    
+    if (renderScene) {
+        do {
+            VkSubmitInfo submitInfo = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &preprocessCommandBuffer_
+            };
 
-    do {
-        VkSubmitInfo submitInfo = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &preprocessCommandBuffer_
-        };
-        
-        CheckResult(vkQueueSubmit(context->computeQueue_, 1, &submitInfo, context->inFlightFences_[currentFrameIndex]));
-        CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
-        CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
-        
-    } while (!recordRenderCommandBuffer(currentFrameIndex));
+            CheckResult(vkQueueSubmit(context->computeQueue_, 1, &submitInfo, context->inFlightFences_[currentFrameIndex]));
+            CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
+            CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
+
+//            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (!recordRenderCommandBuffer(currentFrameIndex, true));
+    } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(6));
+        if (!recordRenderCommandBuffer(currentFrameIndex, false)) {
+            return;
+        }
+    }
         
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     VkSubmitInfo renderSubmitInfo = {
@@ -603,7 +919,7 @@ void Vulkan3DGS::draw() {
         .pSignalSemaphores = &context->renderFinishedSemaphores_[currentFrameIndex] // 信号：渲染完成
     };
     CheckResult(vkQueueSubmit(context->computeQueue_, 1, &renderSubmitInfo, context->inFlightFences_[currentFrameIndex]));
-    
+
     VkPresentInfoKHR presentInfo = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,

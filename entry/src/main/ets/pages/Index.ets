@@ -49,42 +49,43 @@ struct Vulkan3DGSPage {
           }
         })
         .width('100%')
-        .height('70%')
+        .height('100%')
+        .backgroundColor(Color.White)
 
-      // 按钮区域
-      Row() {
-        Button('Start')
-          .type(ButtonType.Normal)
-          .fontSize(20)
-          .fontWeight(FontWeight.Medium)
-          .backgroundColor('#66BB6A')
-          .borderRadius(8)
-          .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-          .onClick(() => {
-            this.handleStart();
-          })
-
-        Button('Stop')
-          .type(ButtonType.Normal)
-          .fontSize(20)
-          .fontWeight(FontWeight.Medium)
-          // 修改背景色为亮红色以便在黑底上可见
-          .backgroundColor('#EF5350')
-          .borderRadius(8)
-          .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-          .margin({ left: 20 })
-          .onClick(() => {
-            this.handleStop();
-          })
-      }
-      .width('100%')
-      .height('20%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
+    //   // 按钮区域
+    //   Row() {
+    //     Button('Start')
+    //       .type(ButtonType.Normal)
+    //       .fontSize(20)
+    //       .fontWeight(FontWeight.Medium)
+    //       .backgroundColor('#66BB6A')
+    //       .borderRadius(8)
+    //       .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+    //       .onClick(() => {
+    //         this.handleStart();
+    //       })
+    //
+    //     Button('Stop')
+    //       .type(ButtonType.Normal)
+    //       .fontSize(20)
+    //       .fontWeight(FontWeight.Medium)
+    //       // 修改背景色为亮红色以便在黑底上可见
+    //       .backgroundColor('#EF5350')
+    //       .borderRadius(8)
+    //       .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+    //       .margin({ left: 20 })
+    //       .onClick(() => {
+    //         this.handleStop();
+    //       })
+    //   }
+    //   .width('100%')
+    //   .height('20%')
+    //   .justifyContent(FlexAlign.Center)
+    //   .alignItems(VerticalAlign.Center)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Color.Black)
+    .backgroundColor(Color.White)
   }
 
   private handleStart(): void {

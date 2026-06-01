@@ -73,7 +73,9 @@ public:
     void createRenderPipeline();
     void createCommandPool();
     void recordPreprocessCommandBuffer();
-    bool recordRenderCommandBuffer(uint32_t currentFrame);
+    bool recordRenderCommandBuffer(uint32_t currentFrame, bool renderScene);
+    void createCachedOutputImage();
+    void destroyCachedOutputImage();
     
     void loadTestCameras();
     void recreateSwapchain();
@@ -93,6 +95,11 @@ private:
     VkCommandPool commandPool_;
     VkCommandBuffer preprocessCommandBuffer_;
     std::vector<VkCommandBuffer> renderCommandBuffers_;
+    VkImage cachedOutputImage_ = VK_NULL_HANDLE;
+    VkImageView cachedOutputImageView_ = VK_NULL_HANDLE;
+    VmaAllocation cachedOutputImageAllocation_ = VK_NULL_HANDLE;
+    bool cachedOutputImageValid_ = false;
+    uint64_t drawCallIndex_ = 0;
     
     std::shared_ptr<ComputePipeline> preprocessPipeline;
     std::shared_ptr<ComputePipeline> renderPipeline;

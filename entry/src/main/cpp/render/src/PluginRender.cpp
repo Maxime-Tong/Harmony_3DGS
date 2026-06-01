@@ -84,10 +84,10 @@ void PluginRender::OnSurfaceCreatedCB(OH_NativeXComponent* component, void* wind
     PluginRender& render = PluginRender::GetInstance();
     render.nativeWindow_ = static_cast<OHNativeWindow*>(window);
 
-    // uint64_t targetWidth = 720;
-    // uint64_t targetHeight = 1280;
-    uint64_t targetWidth = 480;
-    uint64_t targetHeight = 720;
+     uint64_t targetWidth = 720;
+     uint64_t targetHeight = 1280;
+//    uint64_t targetWidth = 240;
+//    uint64_t targetHeight = 320;
 
     int32_t ret = OH_NativeWindow_NativeWindowHandleOpt(
         render.nativeWindow_, 
@@ -105,6 +105,8 @@ void PluginRender::OnSurfaceCreatedCB(OH_NativeXComponent* component, void* wind
     LOGI("PluginRender: 渲染分辨率 (%{public}d x %{public}d)", targetWidth, targetHeight);
     render.vulkanRender_->setConfig(targetWidth, targetHeight, render.nativeWindow_, render.resourceManager_);
     render.vulkanRender_->initialize();
+    
+    render.Start();
 }
 
 void PluginRender::OnSurfaceChangedCB(OH_NativeXComponent* component, void* window) {
