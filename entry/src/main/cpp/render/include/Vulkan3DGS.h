@@ -80,6 +80,8 @@ public:
     void loadTestCameras();
     void recreateSwapchain();
     void updateUniforms();
+    bool requiresFullPipeline(const Camera& currentCamera) const;
+    void markFullPipelineCamera(const Camera& cameraUsedForFullPipeline);
     void draw();
     void waitDeviceIde();
 
@@ -134,6 +136,18 @@ private:
     std::vector<Camera> testCameras;
     uint32_t testCameraIndex = 0;
     uint32_t direction = 1;
+    bool hasLastFullPipelineCamera_ = false;
+    bool forceFullPipelineNextFrame_ = true;
+    Camera lastFullPipelineCamera_ {
+        .position = glm::vec3(0.0f, 0.0f, 0.0f),
+        .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        .fov = 45.0f,
+        .nearPlane = 0.1f,
+        .farPlane = 1000.0f,
+    };
+    float cameraPositionThreshold_ = 5.0f;
+    float cameraRotationThresholdDeg_ = 5.0f;
+    float cameraFovThreshold_ = 0.25f;
     
     Camera camera {
         .position = glm::vec3(0.0f, 0.0f, 0.0f),

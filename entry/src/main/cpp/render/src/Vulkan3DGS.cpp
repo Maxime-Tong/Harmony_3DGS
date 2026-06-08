@@ -8,6 +8,7 @@
 #include <native_window/external_window.h>
 
 #include <hilog/log.h>
+#include <cmath>
 #include <thread>
 
 #undef LOG_TAG
@@ -33,6 +34,11 @@ int inline highestBit(uint32_t x) {
     if (x & 0x0000FF00) { return 16; }
     if (x & 0x000000FF) { return 8; }
     return 0;
+}
+
+static float quaternionAngleDegrees(const glm::quat& a, const glm::quat& b) {
+    const float dotValue = glm::clamp(std::abs(glm::dot(glm::normalize(a), glm::normalize(b))), 0.0f, 1.0f);
+    return glm::degrees(2.0f * std::acos(dotValue));
 }
 
 void Vulkan3DGS::setConfig(uint64_t width, uint64_t height, OHNativeWindow* window, NativeResourceManager* resourceManager) {
@@ -419,7 +425,7 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame, bool renderSce
         vkAllocateCommandBuffers(context->device_, &allocInfo, renderCommandBuffers_.data());
     }
 
-    renderScene = renderScene || cachedOutputImage_ == VK_NULL_HANDLE || !cachedOutputImageValid_; 
+    renderScene = renderScene || !hasLastFullPipelineCamera_;
 
     VkCommandBuffer renderCommandBuffer = renderCommandBuffers_[currentFrame];
     vkResetCommandBuffer(renderCommandBuffer, 0);
@@ -699,87 +705,28 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame, bool renderSce
         return true;
     }
 
-    VkImageMemoryBarrier swapchainToDst = {
+    std::vector<uint32_t> descriptorSets = {0, currentImageIndex};
+    renderPipeline->bind(renderCommandBuffer, currentFrame, descriptorSets);
+
+    auto [width, height] = swapchain->swapchainExtent;
+    uint32_t constants[2] = {width, height};
+
+    vkCmdPushConstants(renderCommandBuffer,
+                       renderPipeline->pipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       sizeof(uint32_t) * 2,
+                       constants);
+
+    VkImageMemoryBarrier imageMemoryBarrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .pNext = nullptr,
         .srcAccessMask = VK_ACCESS_NONE,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = swapchain->swapchainImages[currentImageIndex]->image,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1
-        }
-    };
-
-    VkImageMemoryBarrier cacheToSrc = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = cachedOutputImage_,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1
-        }
-    };
-
-    VkImageMemoryBarrier copyBarriers[2] = {swapchainToDst, cacheToSrc};
-    vkCmdPipelineBarrier(renderCommandBuffer,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_DEPENDENCY_BY_REGION_BIT,
-                         0, nullptr,
-                         0, nullptr,
-                         2, copyBarriers);
-
-    recordCopyImage(cachedOutputImage_,
-                    swapchain->swapchainImages[currentImageIndex]->image,
-                    swapchain->swapchainExtent,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-    VkImageMemoryBarrier cacheToGeneral = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        .dstAccessMask = 0,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = cachedOutputImage_,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1
-        }
-    };
-
-    VkImageMemoryBarrier swapchainToPresent = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = 0,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = swapchain->swapchainImages[currentImageIndex]->image,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -789,15 +736,20 @@ bool Vulkan3DGS::recordRenderCommandBuffer(uint32_t currentFrame, bool renderSce
             .layerCount = 1
         }
     };
-
-    VkImageMemoryBarrier presentBarriers[2] = {swapchainToPresent, cacheToGeneral};
     vkCmdPipelineBarrier(renderCommandBuffer,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_DEPENDENCY_BY_REGION_BIT,
                          0, nullptr,
                          0, nullptr,
-                         2, presentBarriers);
+                         1, &imageMemoryBarrier);
+
+    vkCmdDispatch(renderCommandBuffer, (width + 15) / 16, (height + 15) / 16, 1);
+
+    recordPresentTransition(swapchain->swapchainImages[currentImageIndex]->image,
+                            VK_IMAGE_LAYOUT_GENERAL,
+                            VK_ACCESS_SHADER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     vkEndCommandBuffer(renderCommandBuffer);
     return true;
@@ -810,6 +762,7 @@ void Vulkan3DGS::recreateSwapchain() {
     swapchain->recreate();
     createRenderPipeline();
     createCachedOutputImage();
+    forceFullPipelineNextFrame_ = true;
     
     auto [width, height] = swapchain->swapchainExtent;
     auto [oldWidth, oldHeight] = oldExtent;
@@ -858,6 +811,30 @@ void Vulkan3DGS::updateUniforms() {
     uniformBuffer->upload(&data, sizeof(UniformBuffer), 0);
 }
 
+bool Vulkan3DGS::requiresFullPipeline(const Camera& currentCamera) const {
+    if (!hasLastFullPipelineCamera_) {
+        return true;
+    }
+
+    const float positionDelta = glm::length(currentCamera.position - lastFullPipelineCamera_.position);
+    if (positionDelta > cameraPositionThreshold_) {
+        return true;
+    }
+
+    const float rotationDeltaDeg = quaternionAngleDegrees(currentCamera.rotation, lastFullPipelineCamera_.rotation);
+    if (rotationDeltaDeg > cameraRotationThresholdDeg_) {
+        return true;
+    }
+
+    const float fovDelta = std::abs(currentCamera.fov - lastFullPipelineCamera_.fov);
+    return fovDelta > cameraFovThreshold_;
+}
+
+void Vulkan3DGS::markFullPipelineCamera(const Camera& cameraUsedForFullPipeline) {
+    lastFullPipelineCamera_ = cameraUsedForFullPipeline;
+    hasLastFullPipelineCamera_ = true;
+}
+
 void Vulkan3DGS::draw() {
     CheckResult(vkWaitForFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex], VK_TRUE, UINT64_MAX));
     CheckResult(vkResetFences(context->device_, 1, &context->inFlightFences_[currentFrameIndex]));
@@ -875,10 +852,11 @@ void Vulkan3DGS::draw() {
 
     camera = testCameras[testCameraIndex];
     updateUniforms();
-    
-    bool renderScene = (drawCallIndex_ % 2 == 0) || !cachedOutputImageValid_;
-//    bool renderScene = true;
+
+    const bool runFullPipeline = forceFullPipelineNextFrame_ || requiresFullPipeline(camera);
+//    bool runFullPipeline = true;
     drawCallIndex_++;
+    
     
     int nextCameraIndex = testCameraIndex + direction;
     if (nextCameraIndex >= testCameras.size() - 5 || nextCameraIndex < 0) {
@@ -886,7 +864,7 @@ void Vulkan3DGS::draw() {
     }
     testCameraIndex += direction;
     
-    if (renderScene) {
+    if (runFullPipeline) {
         do {
             VkSubmitInfo submitInfo = {
                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -900,8 +878,14 @@ void Vulkan3DGS::draw() {
 
 //            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } while (!recordRenderCommandBuffer(currentFrameIndex, true));
+
+        markFullPipelineCamera(camera);
+        forceFullPipelineNextFrame_ = false;
     } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(6));
+        LOGI("Skipping preprocess, using cached results");
+        // sleep for 6 ms to simulate the time taken by preprocess
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
         if (!recordRenderCommandBuffer(currentFrameIndex, false)) {
             return;
         }

@@ -13,8 +13,8 @@ struct RendererConfiguration {
     float fov = 45.0f;
     float near = 0.2f;
     float far = 1000.0f;
-    std::string scene = "models/princess/point_cloud.ply";
-    std::string testCameras = "models/princess/cameras.json";
+    std::string scene = "models/plant_whitepalm_30000/point_cloud.ply";
+    std::string testCameras = "models/plant_whitepalm_30000/cameras.json";
     
     int image_height = 720;
     int image_width = 1280;
